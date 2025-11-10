@@ -29,10 +29,18 @@ export interface Lookbook {
 
 export async function getActiveLookbooks(): Promise<Lookbook[]> {
   try {
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    );
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+    if (!supabaseUrl || !supabaseAnonKey) {
+      console.error("[Lookbooks] Missing Supabase environment variables", {
+        hasUrl: !!supabaseUrl,
+        hasKey: !!supabaseAnonKey,
+      });
+      return [];
+    }
+
+    const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
     // 활성 룩북 조회
     const { data: lookbooks, error: lookbooksError } = await supabase
