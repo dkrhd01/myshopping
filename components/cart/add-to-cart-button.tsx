@@ -6,6 +6,7 @@
  */
 
 import { useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import { ShoppingCart } from "lucide-react";
 
 import { addToCartAction } from "@/actions/cart";
@@ -17,6 +18,7 @@ interface AddToCartButtonProps {
 }
 
 export function AddToCartButton({ productId, disabled }: AddToCartButtonProps) {
+  const router = useRouter();
   const [message, setMessage] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
@@ -24,6 +26,11 @@ export function AddToCartButton({ productId, disabled }: AddToCartButtonProps) {
     startTransition(async () => {
       const result = await addToCartAction({ productId, quantity: 1 });
       setMessage(result.message);
+      
+      // 성공 시 네비게이션 새로고침하여 장바구니 버튼 업데이트
+      if (result.success) {
+        router.refresh();
+      }
     });
   }
 
@@ -38,7 +45,11 @@ export function AddToCartButton({ productId, disabled }: AddToCartButtonProps) {
         <ShoppingCart className="h-5 w-5" aria-hidden />
         {isPending ? "담는 중..." : "장바구니에 담기"}
       </Button>
-      {message && <p className="text-xs text-muted-foreground">{message}</p>}
+      {message && (
+        <p className={`text-xs ${message.includes("성공") || message.includes("담았습니다") ? "text-green-600" : "text-muted-foreground"}`}>
+          {message}
+        </p>
+      )}
     </div>
   );
 }

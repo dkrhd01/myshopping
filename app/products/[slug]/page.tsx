@@ -1,8 +1,9 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
+import Image from "next/image";
 import { ArrowLeft, Layers3, LayoutGrid, Package } from "lucide-react";
 
-import { createClerkSupabaseClient } from "@/lib/supabase/server";
+import { createClient } from "@supabase/supabase-js";
 import type { ProductRecord } from "@/lib/types/products";
 import { cn, formatCurrency, formatDateTime } from "@/lib/utils";
 import { ProductCard } from "@/components/home/product-card";
@@ -14,21 +15,38 @@ interface ProductPageProps {
 }
 
 interface ProductDetail extends ProductRecord {
+  image_url: string | null;
   relatedProducts: ProductRecord[];
 }
 
 async function fetchProductDetail(slugOrId: string): Promise<ProductDetail | null> {
   try {
-    const supabase = createClerkSupabaseClient();
+    // 공개 데이터이므로 anon key 사용 (RLS 비활성화 상태)
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    );
 
-    const { data, error } = await supabase
+    // slug 또는 id로 상품 조회
+    let query = supabase
       .from("products")
       .select(
-        "id, name, slug, description, price, currency, category, inventory_quantity, is_active, created_at",
+        "id, name, slug, description, price, currency, category, inventory_quantity, is_active, created_at, image_url",
       )
-      .eq("is_active", true)
-      .or(`slug.eq.${slugOrId},id.eq.${slugOrId}`)
-      .maybeSingle();
+      .eq("is_active", true);
+
+    // UUID 형식인지 확인 (UUID는 36자이고 하이픈 포함)
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(slugOrId);
+    
+    if (isUuid) {
+      // ID로 조회
+      query = query.eq("id", slugOrId);
+    } else {
+      // Slug로 조회
+      query = query.eq("slug", slugOrId);
+    }
+
+    const { data, error } = await query.maybeSingle();
 
     if (error) {
       console.error("[ProductDetail] failed to fetch product", { error, slugOrId });
@@ -42,7 +60,7 @@ async function fetchProductDetail(slugOrId: string): Promise<ProductDetail | nul
     const { data: relatedProducts, error: relatedError } = await supabase
       .from("products")
       .select(
-        "id, name, slug, description, price, currency, category, inventory_quantity, is_active, created_at",
+        "id, name, slug, description, price, currency, category, inventory_quantity, is_active, created_at, image_url",
       )
       .eq("is_active", true)
       .eq("category", data.category)
@@ -124,6 +142,20 @@ export default async function ProductDetailPage({ params }: ProductPageProps) {
             />
           </div>
         </header>
+
+        {/* 상품 이미지 */}
+        {product.image_url && (
+          <div className="relative aspect-[16/9] w-full overflow-hidden rounded-3xl border bg-gradient-to-br from-slate-100 to-slate-200 shadow-xl">
+            <Image
+              src={product.image_url}
+              alt={product.name}
+              fill
+              className="object-cover"
+              sizes="(max-width: 1280px) 100vw, 1280px"
+              priority
+            />
+          </div>
+        )}
 
         <section className="grid gap-8 rounded-3xl border bg-white p-10 shadow-xl md:grid-cols-[1.4fr_1fr]">
           <article className="space-y-6">

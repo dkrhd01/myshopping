@@ -23,6 +23,7 @@ export interface ProductListQuery {
   limit?: number;
   category?: string;
   sort?: ProductSortOption;
+  search?: string;
 }
 
 export interface ProductListResult {

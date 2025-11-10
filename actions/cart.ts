@@ -10,6 +10,7 @@ import { z } from "zod";
 import { auth } from "@clerk/nextjs/server";
 
 import { createClerkSupabaseClient } from "@/lib/supabase/server";
+import { getServiceRoleClient } from "@/lib/supabase/service-role";
 import type {
   CartActionResult,
   CartSummary,
@@ -29,38 +30,65 @@ const removeItemSchema = z.object({
   cartItemId: z.string().uuid(),
 });
 
-async function getUserContext() {
-  const { userId } = await auth();
+export async function getUserContext() {
+  try {
+    const { userId } = await auth();
 
-  if (!userId) {
+    console.group("[CartActions] getUserContext");
+    console.log("Clerk userId:", userId);
+
+    if (!userId) {
+      console.log("No userId - user not logged in");
+      console.groupEnd();
+      return {
+        userId: null,
+        supabaseUserId: null,
+      } as const;
+    }
+
+    // Service role을 사용하여 users 테이블 조회 (RLS 우회)
+    const supabase = getServiceRoleClient();
+
+    const { data, error } = await supabase
+      .from("users")
+      .select("id")
+      .eq("clerk_id", userId)
+      .maybeSingle();
+
+    console.log("Supabase query result:", { data, error });
+
+    if (error) {
+      console.error("[CartActions] failed to load users row", { error, userId });
+      console.groupEnd();
+      return {
+        userId: null,
+        supabaseUserId: null,
+      } as const;
+    }
+
+    if (!data) {
+      console.warn("[CartActions] no supabase user found - need sync", { userId });
+      console.groupEnd();
+      return {
+        userId: null,
+        supabaseUserId: null,
+      } as const;
+    }
+
+    console.log("User context resolved:", { userId, supabaseUserId: data.id });
+    console.groupEnd();
+
+    return {
+      userId,
+      supabaseUserId: data.id as string,
+    } as const;
+  } catch (error) {
+    console.error("[CartActions] getUserContext error", error);
     return {
       userId: null,
       supabaseUserId: null,
     } as const;
   }
-
-  const supabase = createClerkSupabaseClient();
-
-  const { data, error } = await supabase
-    .from("users")
-    .select("id")
-    .eq("clerk_id", userId)
-    .maybeSingle();
-
-  if (error) {
-    console.error("[CartActions] failed to load users row", { error, userId });
-    throw new Error("사용자 정보를 불러오지 못했습니다.");
-  }
-
-  if (!data) {
-    console.warn("[CartActions] no supabase user found", { userId });
-    throw new Error("사용자 동기화가 필요합니다.");
-  }
-
-  return {
-    userId,
-    supabaseUserId: data.id as string,
-  } as const;
 }
 
 export async function getCart(): Promise<CartSummary> {
@@ -93,15 +121,18 @@ export async function getCart(): Promise<CartSummary> {
     }
 
     const items = (data ?? []).map((item) => {
-      const product = item.product
+      const rawProduct = (item as any).product;
+      const productRow = Array.isArray(rawProduct) ? rawProduct[0] : rawProduct;
+
+      const product = productRow
         ? {
-            id: item.product.id as string,
-            name: item.product.name as string,
-            slug: (item.product.slug as string | null) ?? null,
-            price: Number(item.product.price ?? 0),
-            currency: (item.product.currency as string) ?? "KRW",
-            category: (item.product.category as string | null) ?? null,
-            inventory_quantity: Number(item.product.inventory_quantity ?? 0),
+            id: productRow.id as string,
+            name: productRow.name as string,
+            slug: (productRow.slug as string | null) ?? null,
+            price: Number(productRow.price ?? 0),
+            currency: (productRow.currency as string) ?? "KRW",
+            category: (productRow.category as string | null) ?? null,
+            inventory_quantity: Number(productRow.inventory_quantity ?? 0),
           }
         : null;
 
@@ -133,7 +164,7 @@ export async function getCart(): Promise<CartSummary> {
       requiresAuth: false,
     };
   } catch (error) {
-    console.error("[CartActions] getCart failed", error);
+    console.error("[CartActions] getCart error", error);
     return {
       items: [],
       subtotal: 0,
@@ -145,8 +176,13 @@ export async function getCart(): Promise<CartSummary> {
 }
 
 export async function addToCartAction(input: z.infer<typeof addToCartSchema>): Promise<CartActionResult> {
+  console.group("[CartActions] addToCartAction START");
+  console.log("Input:", input);
+
   const parsed = addToCartSchema.safeParse(input);
   if (!parsed.success) {
+    console.error("Validation failed:", parsed.error);
+    console.groupEnd();
     return {
       success: false,
       message: "유효하지 않은 요청입니다.",
@@ -155,16 +191,22 @@ export async function addToCartAction(input: z.infer<typeof addToCartSchema>): P
 
   try {
     const context = await getUserContext();
+    console.log("User context:", context);
 
     if (!context.userId || !context.supabaseUserId) {
+      console.warn("No user context - user needs to log in or sync");
+      console.groupEnd();
       return {
         success: false,
-        message: "로그인이 필요합니다.",
+        message: "로그인이 필요합니다. 페이지를 새로고침해주세요.",
       };
     }
 
-    const supabase = createClerkSupabaseClient();
+    // Service role 클라이언트 사용 (RLS 우회)
+    const supabase = getServiceRoleClient();
+    console.log("Using service role client");
 
+    // 상품 조회
     const { data: product, error: productError } = await supabase
       .from("products")
       .select("id, inventory_quantity, is_active")
@@ -172,11 +214,14 @@ export async function addToCartAction(input: z.infer<typeof addToCartSchema>): P
       .eq("is_active", true)
       .maybeSingle();
 
+    console.log("Product query result:", { product, productError });
+
     if (productError || !product) {
       console.warn("[CartActions] product not available", {
         error: productError,
         productId: parsed.data.productId,
       });
+      console.groupEnd();
       return {
         success: false,
         message: "상품을 찾을 수 없습니다.",
@@ -184,36 +229,70 @@ export async function addToCartAction(input: z.infer<typeof addToCartSchema>): P
     }
 
     if ((product.inventory_quantity ?? 0) <= 0) {
+      console.warn("Product out of stock");
+      console.groupEnd();
       return {
         success: false,
         message: "현재 재고가 없습니다.",
       };
     }
 
-    const { data: existingItem } = await supabase
+    // 기존 장바구니 항목 조회
+    const { data: existingItem, error: existingError } = await supabase
       .from("cart_items")
       .select("id, quantity")
       .eq("user_id", context.supabaseUserId)
       .eq("product_id", parsed.data.productId)
       .maybeSingle();
 
+    console.log("Existing cart item query:", { existingItem, existingError });
+
     const nextQuantity = Math.min(
       product.inventory_quantity ?? parsed.data.quantity,
       (existingItem?.quantity ?? 0) + parsed.data.quantity,
     );
 
+    console.log("Next quantity:", nextQuantity);
+
     if (existingItem) {
-      await supabase
+      console.log("Updating existing cart item");
+      const { error: updateError } = await supabase
         .from("cart_items")
         .update({ quantity: nextQuantity })
         .eq("id", existingItem.id)
         .eq("user_id", context.supabaseUserId);
+
+      if (updateError) {
+        console.error("[CartActions] update cart item failed", updateError);
+        console.groupEnd();
+        return {
+          success: false,
+          message: `장바구니 업데이트에 실패했습니다. 오류: ${updateError.message}`,
+        };
+      }
+      console.log("Update successful");
     } else {
-      await supabase.from("cart_items").insert({
+      console.log("Inserting new cart item");
+      const insertData = {
         user_id: context.supabaseUserId,
         product_id: parsed.data.productId,
         quantity: nextQuantity,
-      });
+      };
+      console.log("Insert data:", insertData);
+
+      const { error: insertError } = await supabase
+        .from("cart_items")
+        .insert(insertData);
+
+      if (insertError) {
+        console.error("[CartActions] insert cart item failed", insertError);
+        console.groupEnd();
+        return {
+          success: false,
+          message: `장바구니 추가에 실패했습니다. 오류: ${insertError.message}`,
+        };
+      }
+      console.log("Insert successful");
     }
 
     console.info("[CartActions] added to cart", {
@@ -224,6 +303,10 @@ export async function addToCartAction(input: z.infer<typeof addToCartSchema>): P
 
     revalidatePath("/cart");
     revalidatePath("/products");
+    revalidatePath("/"); // 네비게이션 장바구니 버튼 업데이트를 위해
+
+    console.log("Cache revalidated");
+    console.groupEnd();
 
     return {
       success: true,
@@ -231,9 +314,10 @@ export async function addToCartAction(input: z.infer<typeof addToCartSchema>): P
     };
   } catch (error) {
     console.error("[CartActions] addToCart failed", error);
+    console.groupEnd();
     return {
       success: false,
-      message: "장바구니 추가에 실패했습니다.",
+      message: `알 수 없는 오류가 발생했습니다: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
 }
@@ -294,7 +378,9 @@ export async function updateCartQuantityAction(
       };
     }
 
-    const maxQuantity = Number(cartItem.product?.inventory_quantity ?? 0);
+    const rawProduct = (cartItem as any).product;
+    const productRow = Array.isArray(rawProduct) ? rawProduct[0] : rawProduct;
+    const maxQuantity = Number(productRow?.inventory_quantity ?? 0);
 
     if (maxQuantity <= 0) {
       await supabase
@@ -303,9 +389,11 @@ export async function updateCartQuantityAction(
         .eq("id", parsed.data.cartItemId)
         .eq("user_id", context.supabaseUserId);
 
+      console.info("[CartActions] removed item due to no stock", parsed.data.cartItemId);
+      revalidatePath("/cart");
       return {
         success: false,
-        message: "재고가 없어 장바구니에서 제거되었습니다.",
+        message: "재고가 없어 장바구니에서 제거했습니다.",
       };
     }
 
@@ -326,10 +414,10 @@ export async function updateCartQuantityAction(
 
     return {
       success: true,
-      message: "수량이 업데이트되었습니다.",
+      message: "수량을 변경했습니다.",
     };
   } catch (error) {
-    console.error("[CartActions] update quantity failed", error);
+    console.error("[CartActions] updateQuantity failed", error);
     return {
       success: false,
       message: "수량 변경에 실패했습니다.",
@@ -375,11 +463,10 @@ export async function removeCartItemAction(
       message: "장바구니에서 제거했습니다.",
     };
   } catch (error) {
-    console.error("[CartActions] remove failed", error);
+    console.error("[CartActions] removeCartItem failed", error);
     return {
       success: false,
-      message: "장바구니 제거에 실패했습니다.",
+      message: "삭제에 실패했습니다.",
     };
   }
 }
-

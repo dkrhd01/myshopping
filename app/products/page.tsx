@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 
 import { cn, formatCurrency } from "@/lib/utils";
-import { createClerkSupabaseClient } from "@/lib/supabase/server";
+import { createClient } from "@supabase/supabase-js";
 import type {
   ProductListQuery,
   ProductListResult,
@@ -11,17 +11,11 @@ import type {
 } from "@/lib/types/products";
 import { ProductCard } from "@/components/home/product-card";
 import { Button } from "@/components/ui/button";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { SortSelect } from "@/components/products/sort-select";
 import { ArrowLeft, ChevronLeft, ChevronRight, Filter } from "lucide-react";
 
 interface ProductsPageProps {
-  searchParams: ProductListQuery;
+  searchParams: Promise<ProductListQuery>;
 }
 
 const PER_PAGE_DEFAULT = 12;
@@ -35,7 +29,23 @@ const SORT_OPTIONS: Record<ProductSortOption, string> = {
 async function fetchProductList(
   searchParams: ProductListQuery,
 ): Promise<ProductListResult> {
-  const supabase = createClerkSupabaseClient();
+  // 공개 데이터이므로 anon key 사용 (RLS 비활성화 상태)
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!supabaseUrl || !supabaseAnonKey) {
+    console.error("[ProductsPage] Missing Supabase environment variables");
+    return {
+      products: [],
+      total: 0,
+      page: 1,
+      limit: PER_PAGE_DEFAULT,
+      pageCount: 0,
+      availableCategories: [],
+    };
+  }
+
+  const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
   const page = Math.max(1, Number(searchParams.page ?? 1));
   const limit = Math.min(
@@ -44,6 +54,7 @@ async function fetchProductList(
   );
   const category = searchParams.category?.trim();
   const sort = searchParams.sort ?? "latest";
+  const search = searchParams.search?.trim();
 
   const from = (page - 1) * limit;
   const to = from + limit - 1;
@@ -51,13 +62,18 @@ async function fetchProductList(
   let query = supabase
     .from("products")
     .select(
-      "id, name, slug, description, price, currency, category, inventory_quantity, is_active, created_at",
+      "id, name, slug, description, price, currency, category, inventory_quantity, is_active, created_at, image_url",
       { count: "exact" },
     )
     .eq("is_active", true);
 
   if (category) {
     query = query.eq("category", category);
+  }
+
+  // 검색 기능: 이름이나 설명에서 검색
+  if (search) {
+    query = query.or(`name.ilike.%${search}%,description.ilike.%${search}%`);
   }
 
   switch (sort) {
@@ -79,8 +95,19 @@ async function fetchProductList(
     console.error("[ProductsPage] failed to fetch products", {
       error,
       searchParams,
+      errorCode: error.code,
+      errorMessage: error.message,
+      errorDetails: error.details,
     });
-    throw error;
+    // 에러 발생 시 빈 배열 반환 (페이지는 렌더링됨)
+    return {
+      products: [],
+      total: 0,
+      page,
+      limit,
+      pageCount: 0,
+      availableCategories: [],
+    };
   }
 
   const { data: categoriesData, error: categoriesError } = await supabase
@@ -109,6 +136,8 @@ async function fetchProductList(
     pageCount,
     category,
     sort,
+    productCount: data?.length ?? 0,
+    products: data?.map((p) => ({ id: p.id, name: p.name, is_active: p.is_active })),
   });
 
   return {
@@ -134,6 +163,7 @@ function getPaginationLinks({
   if (searchParams.category) params.set("category", searchParams.category);
   if (searchParams.sort) params.set("sort", searchParams.sort);
   if (searchParams.limit) params.set("limit", String(searchParams.limit));
+  if (searchParams.search) params.set("search", searchParams.search);
 
   const makeLink = (targetPage: number) => {
     const nextParams = new URLSearchParams(params.toString());
@@ -154,13 +184,7 @@ function getPaginationLinks({
   };
 }
 
-function buildSortLink(option: ProductSortOption, searchParams: ProductListQuery) {
-  const params = new URLSearchParams();
-  params.set("sort", option);
-  if (searchParams.category) params.set("category", searchParams.category);
-  if (searchParams.limit) params.set("limit", String(searchParams.limit));
-  return `/products?${params.toString()}`;
-}
+// buildSortLink 함수는 더 이상 사용하지 않음 (SortSelect 컴포넌트로 대체)
 
 function buildCategoryLink(category: string | null, searchParams: ProductListQuery) {
   const params = new URLSearchParams();
@@ -169,12 +193,14 @@ function buildCategoryLink(category: string | null, searchParams: ProductListQue
   }
   if (searchParams.sort) params.set("sort", searchParams.sort);
   if (searchParams.limit) params.set("limit", String(searchParams.limit));
+  if (searchParams.search) params.set("search", searchParams.search);
   params.delete("page");
   const queryString = params.toString();
   return queryString ? `/products?${queryString}` : "/products";
 }
 
-export default async function ProductsPage({ searchParams }: ProductsPageProps) {
+export default async function ProductsPage(props: ProductsPageProps) {
+  const searchParams = await props.searchParams;
   const result = await fetchProductList(searchParams);
 
   if (!result) {
@@ -195,9 +221,13 @@ export default async function ProductsPage({ searchParams }: ProductsPageProps) 
       <section className="mx-auto flex w-full max-w-7xl flex-col gap-8 px-6 py-12">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
-            <h1 className="text-3xl font-semibold">상품 목록</h1>
+            <h1 className="text-3xl font-semibold">
+              {searchParams.search ? `"${searchParams.search}" 검색 결과` : "상품 목록"}
+            </h1>
             <p className="text-sm text-muted-foreground">
-              총 {formatCurrency(result.total)}개의 상품을 확인할 수 있습니다.
+              {searchParams.search
+                ? `총 ${result.total.toLocaleString("ko-KR")}개의 검색 결과`
+                : `총 ${result.total.toLocaleString("ko-KR")}개의 상품을 확인할 수 있습니다.`}
             </p>
           </div>
           <Button variant="ghost" asChild className="gap-2">
@@ -254,20 +284,7 @@ export default async function ProductsPage({ searchParams }: ProductsPageProps) 
                   : "상품이 없습니다."}
               </div>
               <div className="flex items-center gap-3">
-                <Select defaultValue={activeSort}>
-                  <SelectTrigger className="w-[160px]">
-                    <SelectValue placeholder="정렬" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(Object.keys(SORT_OPTIONS) as ProductSortOption[]).map((option) => (
-                      <SelectItem key={option} value={option} asChild>
-                        <Link href={buildSortLink(option, searchParams)}>
-                          {SORT_OPTIONS[option]}
-                        </Link>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <SortSelect defaultValue={activeSort} />
               </div>
             </div>
 
