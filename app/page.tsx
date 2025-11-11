@@ -17,7 +17,13 @@ export default async function Home() {
       id: lookbooks[0].id,
       title: lookbooks[0].title,
       productsCount: lookbooks[0].products.length,
+      imageUrl: lookbooks[0].image_url,
     });
+  } else {
+    console.warn("[HomePage] No lookbooks found. Check:");
+    console.warn("1. Supabase environment variables are set");
+    console.warn("2. lookbooks table has data with is_active = true");
+    console.warn("3. RLS policies allow access (or RLS is disabled)");
   }
 
   return (

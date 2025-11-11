@@ -5,7 +5,7 @@
  * @description 룩북 데이터를 가져오는 서버 액션
  */
 
-import { createClient } from "@supabase/supabase-js";
+import { getServiceRoleClient } from "@/lib/supabase/service-role";
 
 export interface LookbookProduct {
   id: string;
@@ -29,18 +29,28 @@ export interface Lookbook {
 
 export async function getActiveLookbooks(): Promise<Lookbook[]> {
   try {
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    // Service Role Key를 사용하여 RLS 우회 (공개 데이터이므로)
+    let supabase;
+    try {
+      supabase = getServiceRoleClient();
+    } catch (error) {
+      console.error("[Lookbooks] Failed to create Supabase client", error);
+      // Service Role Key가 없으면 anon key로 시도
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-    if (!supabaseUrl || !supabaseAnonKey) {
-      console.error("[Lookbooks] Missing Supabase environment variables", {
-        hasUrl: !!supabaseUrl,
-        hasKey: !!supabaseAnonKey,
-      });
-      return [];
+      if (!supabaseUrl || !supabaseAnonKey) {
+        console.error("[Lookbooks] Missing Supabase environment variables", {
+          hasUrl: !!supabaseUrl,
+          hasAnonKey: !!supabaseAnonKey,
+          hasServiceRoleKey: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+        });
+        return [];
+      }
+
+      const { createClient } = await import("@supabase/supabase-js");
+      supabase = createClient(supabaseUrl, supabaseAnonKey);
     }
-
-    const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
     // 활성 룩북 조회
     const { data: lookbooks, error: lookbooksError } = await supabase
