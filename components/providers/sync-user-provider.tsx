@@ -8,6 +8,8 @@ import { useSyncUser } from "@/hooks/use-sync-user";
  * RootLayout에 추가하여 로그인한 모든 사용자를 자동으로 Supabase에 동기화합니다.
  */
 export function SyncUserProvider({ children }: { children: React.ReactNode }) {
+  // 항상 훅 호출 (훅 내부에서 조건부 처리)
   useSyncUser();
+  
   return <>{children}</>;
 }

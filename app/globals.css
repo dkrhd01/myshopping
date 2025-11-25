@@ -117,9 +117,13 @@
     @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-gradient-to-b from-gray-50 to-white text-foreground;
   }
   main {
     @apply max-w-7xl mx-auto pt-16 px-4;
+  }
+  /* Next.js 개발 도구 포털 요소 숨기기 */
+  nextjs-portal {
+    display: none;
   }
 }
